@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""
+Argentine YouTube Streaming Channel Tracker
+
+Tracks viewer counts for live streaming channels (Luzu TV, Olga, Blender, etc.)
+every minute, stores data in SQLite, and generates hourly reports with graphs.
+
+Usage:
+    python main.py              # Run the tracker (continuous)
+    python main.py --report     # Generate a one-off report from existing data
+    python main.py --status     # Show current status of tracked streams
+"""
+
+import argparse
+import logging
+import signal
+import sys
+import time
+from datetime import datetime, timedelta
+
+import schedule
+
+import database as db
+import tracker
+import reporter
+from config import YOUTUBE_API_KEY, POLL_INTERVAL, LIVE_SEARCH_INTERVAL
+
+# --- Logging setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("tracker.log", encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger(__name__)
+
+
+def handle_shutdown(signum, frame):
+    logger.info("Shutting down gracefully...")
+    sys.exit(0)
+
+
+def run_tracker():
+    """Main tracker loop."""
+    if not YOUTUBE_API_KEY or YOUTUBE_API_KEY == "your_api_key_here":
+        logger.error(
+            "YouTube API key not configured. "
+            "Copy .env.example to .env and set your YOUTUBE_API_KEY."
+        )
+        sys.exit(1)
+
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
+    db.init_db()
+
+    logger.info("=" * 50)
+    logger.info("Streaming Channel Tracker - Starting")
+    logger.info(f"  Poll interval: {POLL_INTERVAL}s")
+    logger.info(f"  Live search interval: {LIVE_SEARCH_INTERVAL}s")
+    logger.info("=" * 50)
+
+    # Run discovery immediately on start
+    tracker.discover_live_streams()
+    tracker.poll_viewer_counts()
+
+    # Schedule tasks
+    schedule.every(POLL_INTERVAL).seconds.do(tracker.poll_viewer_counts)
+    schedule.every(LIVE_SEARCH_INTERVAL).seconds.do(tracker.discover_live_streams)
+    schedule.every().hour.at(":00").do(reporter.generate_hourly_report)
+
+    logger.info("Scheduler started. Press Ctrl+C to stop.")
+
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+
+def show_status():
+    """Show current status of tracked streams."""
+    db.init_db()
+    streams = db.get_active_streams()
+
+    if not streams:
+        print("No active streams being tracked.")
+        print("Run the tracker first: python main.py")
+        return
+
+    print(f"\nActive streams: {len(streams)}\n")
+    for s in streams:
+        current = s.get("current_viewers") or 0
+        peak = s.get("peak_viewers") or 0
+        print(f"  {s['channel_name']}: {current:,} viewers (peak: {peak:,})")
+        print(f"    {s['title']}")
+        print(f"    https://youtube.com/watch?v={s['video_id']}")
+        print()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Track Argentine YouTube streaming channels"
+    )
+    parser.add_argument(
+        "--report", action="store_true",
+        help="Generate a one-off report from existing data"
+    )
+    parser.add_argument(
+        "--status", action="store_true",
+        help="Show current status of tracked streams"
+    )
+    args = parser.parse_args()
+
+    if args.report:
+        db.init_db()
+        reporter.generate_hourly_report()
+    elif args.status:
+        show_status()
+    else:
+        run_tracker()
+
+
+if __name__ == "__main__":
+    main()
