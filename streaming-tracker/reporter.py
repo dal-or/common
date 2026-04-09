@@ -43,13 +43,17 @@ def _ensure_reports_dir(subdir: str = "") -> str:
 
 
 def _parse_iso(dt_str: str) -> datetime:
-    """Parse ISO datetime string, handling various formats."""
+    """Parse ISO datetime string, always returning a naive UTC datetime."""
     if not dt_str:
         return datetime.utcnow()
     # Handle YouTube's format with Z suffix
     dt_str = dt_str.replace("Z", "+00:00")
     try:
-        return datetime.fromisoformat(dt_str)
+        dt = datetime.fromisoformat(dt_str)
+        # Strip timezone info to keep everything as naive UTC
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
     except ValueError:
         return datetime.utcnow()
 
