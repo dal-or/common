@@ -16,7 +16,7 @@ import logging
 import signal
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import schedule
 
@@ -25,7 +25,7 @@ import tracker
 import reporter
 import channels as ch
 import youtube_api as yt
-from config import YOUTUBE_API_KEY, POLL_INTERVAL, LIVE_SEARCH_INTERVAL
+from config import YOUTUBE_API_KEYS, POLL_INTERVAL, LIVE_SEARCH_INTERVAL
 
 # --- Logging setup ---
 logging.basicConfig(
@@ -39,23 +39,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Track the current day to reset exhausted keys at midnight
+_current_day = None
+
 
 def handle_shutdown(signum, frame):
     logger.info("Shutting down gracefully...")
     sys.exit(0)
 
 
+def _check_daily_reset():
+    """Reset exhausted API keys at the start of each new day."""
+    global _current_day
+    today = datetime.utcnow().date()
+    if _current_day is not None and today != _current_day:
+        logger.info("New day detected — resetting API key quota status.")
+        yt.reset_exhausted_keys()
+    _current_day = today
+
+
 def run_tracker():
     """Main tracker loop."""
-    if not YOUTUBE_API_KEY or YOUTUBE_API_KEY == "your_api_key_here":
+    if not YOUTUBE_API_KEYS or YOUTUBE_API_KEYS == ["your_api_key_here"]:
         logger.error(
             "YouTube API key not configured. "
-            "Copy .env.example to .env and set your YOUTUBE_API_KEY."
+            "Copy .env.example to .env and set YOUTUBE_API_KEY "
+            "or YOUTUBE_API_KEYS (comma-separated for multiple keys)."
         )
         sys.exit(1)
 
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
+
+    # Initialize API key pool
+    yt.init_api_pool(YOUTUBE_API_KEYS)
 
     db.init_db()
 
@@ -70,10 +87,14 @@ def run_tracker():
 
     logger.info("=" * 50)
     logger.info("Streaming Channel Tracker - Starting")
+    logger.info(f"  API keys: {len(YOUTUBE_API_KEYS)}")
     logger.info(f"  Channels: {len(resolved)}")
     logger.info(f"  Poll interval: {POLL_INTERVAL}s")
     logger.info(f"  Live search interval: {LIVE_SEARCH_INTERVAL}s")
     logger.info("=" * 50)
+
+    # Initialize day tracking for key reset
+    _check_daily_reset()
 
     # Run discovery immediately on start
     tracker.discover_live_streams()
@@ -83,6 +104,7 @@ def run_tracker():
     schedule.every(POLL_INTERVAL).seconds.do(tracker.poll_viewer_counts)
     schedule.every(LIVE_SEARCH_INTERVAL).seconds.do(tracker.discover_live_streams)
     schedule.every().hour.at(":00").do(reporter.generate_hourly_report)
+    schedule.every(5).minutes.do(_check_daily_reset)
 
     logger.info("Scheduler started. Press Ctrl+C to stop.")
 

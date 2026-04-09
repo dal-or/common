@@ -19,9 +19,18 @@ from dotenv import load_dotenv
 _base_dir = Path(__file__).resolve().parent
 load_dotenv(_base_dir / ".env")
 
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+# --- API Keys ---
+# Supports a pool of keys for quota rotation.
+# Set YOUTUBE_API_KEYS as comma-separated values, or use a single YOUTUBE_API_KEY.
+_keys_str = os.getenv("YOUTUBE_API_KEYS", "")
+if _keys_str:
+    YOUTUBE_API_KEYS = [k.strip() for k in _keys_str.split(",") if k.strip()]
+else:
+    single_key = os.getenv("YOUTUBE_API_KEY", "")
+    YOUTUBE_API_KEYS = [single_key] if single_key else []
+
 REPORTS_DIR = os.getenv("REPORTS_DIR", str(_base_dir / "reports"))
 DB_PATH = os.getenv("DB_PATH", str(_base_dir / "streaming_tracker.db"))
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))
-LIVE_SEARCH_INTERVAL = int(os.getenv("LIVE_SEARCH_INTERVAL", "300"))
+LIVE_SEARCH_INTERVAL = int(os.getenv("LIVE_SEARCH_INTERVAL", "600"))
 CHANNELS_FILE = os.getenv("CHANNELS_FILE", str(_base_dir / "channels.json"))
