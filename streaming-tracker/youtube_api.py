@@ -120,3 +120,39 @@ def check_video_still_live(video_id: str) -> Optional[dict]:
     if details and details[0]["is_live"]:
         return details[0]
     return None
+
+
+def resolve_handle_to_channel_id(handle: str) -> Optional[str]:
+    """
+    Resolve a YouTube handle (e.g. 'olgaenvivo') to a channel ID.
+    Uses channels.list with forHandle parameter.
+    Costs 1 quota unit.
+    """
+    yt = get_youtube_client()
+    try:
+        response = yt.channels().list(
+            part="id",
+            forHandle=handle,
+        ).execute()
+
+        items = response.get("items", [])
+        if items:
+            return items[0]["id"]
+
+        # Fallback: try search
+        logger.warning(f"forHandle lookup failed for @{handle}, trying search...")
+        response = yt.search().list(
+            part="snippet",
+            q=handle,
+            type="channel",
+            maxResults=1,
+        ).execute()
+        items = response.get("items", [])
+        if items:
+            return items[0]["snippet"]["channelId"]
+
+        return None
+
+    except HttpError as e:
+        logger.error(f"Error resolving handle @{handle}: {e}")
+        return None

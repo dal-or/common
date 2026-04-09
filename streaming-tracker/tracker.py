@@ -17,12 +17,21 @@ from datetime import datetime, timedelta
 
 import database as db
 import youtube_api as yt
-from config import CHANNELS
 
 logger = logging.getLogger(__name__)
 
 # In-memory cache: channel_name -> {video_id: stream_id}
 _active_streams: dict[str, dict[str, int]] = {}
+
+# Loaded channels: {name: channel_id} — set by init_channels()
+_channels: dict[str, str] = {}
+
+
+def init_channels(channels: dict[str, str]):
+    """Set the channels dict from the resolved channels.json."""
+    global _channels
+    _channels = channels
+    logger.info(f"Tracker initialized with {len(_channels)} channels: {', '.join(_channels.keys())}")
 
 
 def discover_live_streams():
@@ -33,7 +42,7 @@ def discover_live_streams():
     logger.info("Discovering live streams...")
     all_live_video_ids = set()
 
-    for channel_name, channel_id in CHANNELS.items():
+    for channel_name, channel_id in _channels.items():
         try:
             live_results = yt.search_live_streams(channel_id)
         except Exception as e:

@@ -23,6 +23,8 @@ import schedule
 import database as db
 import tracker
 import reporter
+import channels as ch
+import youtube_api as yt
 from config import YOUTUBE_API_KEY, POLL_INTERVAL, LIVE_SEARCH_INTERVAL
 
 # --- Logging setup ---
@@ -57,8 +59,18 @@ def run_tracker():
 
     db.init_db()
 
+    # Resolve channel URLs to IDs (reads channels.json)
+    resolved = ch.resolve_channels(yt.resolve_handle_to_channel_id)
+    if not resolved:
+        logger.error(
+            "No channels could be resolved. Check channels.json and your API key."
+        )
+        sys.exit(1)
+    tracker.init_channels(resolved)
+
     logger.info("=" * 50)
     logger.info("Streaming Channel Tracker - Starting")
+    logger.info(f"  Channels: {len(resolved)}")
     logger.info(f"  Poll interval: {POLL_INTERVAL}s")
     logger.info(f"  Live search interval: {LIVE_SEARCH_INTERVAL}s")
     logger.info("=" * 50)
