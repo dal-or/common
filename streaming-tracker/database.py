@@ -31,6 +31,7 @@ def init_db():
             channel_id      TEXT    NOT NULL,
             video_id        TEXT    NOT NULL UNIQUE,
             title           TEXT    NOT NULL,
+            thumbnail_url   TEXT    NOT NULL DEFAULT '',
             started_at      TEXT,           -- ISO 8601 from YouTube
             ended_at        TEXT,           -- set when stream ends
             first_seen      TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -53,6 +54,11 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_streams_channel
             ON streams(channel_name);
     """)
+    # Migrate: add thumbnail_url column if missing (for existing DBs)
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(streams)").fetchall()]
+    if "thumbnail_url" not in columns:
+        conn.execute("ALTER TABLE streams ADD COLUMN thumbnail_url TEXT NOT NULL DEFAULT ''")
+
     conn.commit()
     conn.close()
 
@@ -63,6 +69,7 @@ def upsert_stream(
     video_id: str,
     title: str,
     started_at: Optional[str] = None,
+    thumbnail_url: str = "",
 ) -> int:
     """Insert or update a stream record. Returns the stream id."""
     conn = get_connection()
@@ -75,16 +82,23 @@ def upsert_stream(
 
     if row:
         stream_id = row["id"]
-        conn.execute(
-            "UPDATE streams SET last_seen = ?, title = ? WHERE id = ?",
-            (now, title, stream_id),
-        )
+        # Update thumbnail only if we have a new non-empty one
+        if thumbnail_url:
+            conn.execute(
+                "UPDATE streams SET last_seen = ?, title = ?, thumbnail_url = ? WHERE id = ?",
+                (now, title, thumbnail_url, stream_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE streams SET last_seen = ?, title = ? WHERE id = ?",
+                (now, title, stream_id),
+            )
     else:
         cur = conn.execute(
             """INSERT INTO streams (channel_name, channel_id, video_id, title,
-                                    started_at, first_seen, last_seen)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (channel_name, channel_id, video_id, title, started_at, now, now),
+                                    thumbnail_url, started_at, first_seen, last_seen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (channel_name, channel_id, video_id, title, thumbnail_url, started_at, now, now),
         )
         stream_id = cur.lastrowid
 

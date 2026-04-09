@@ -7,15 +7,20 @@ Generates:
 3. A combined PNG comparing all live streams.
 """
 
+import io
 import logging
 import os
 from datetime import datetime
+from urllib.request import urlopen, Request
+from urllib.error import URLError
 
 import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+from PIL import Image
 
 import database as db
 from config import REPORTS_DIR
@@ -58,6 +63,42 @@ def _parse_iso(dt_str: str) -> datetime:
         return datetime.utcnow()
 
 
+def _download_thumbnail(url: str) -> Image.Image | None:
+    """Download a thumbnail image from URL. Returns a PIL Image or None on failure."""
+    if not url:
+        return None
+    try:
+        req = Request(url, headers={"User-Agent": "StreamingTracker/1.0"})
+        with urlopen(req, timeout=10) as resp:
+            data = resp.read()
+        return Image.open(io.BytesIO(data))
+    except (URLError, OSError, Exception) as e:
+        logger.warning(f"Could not download thumbnail: {e}")
+        return None
+
+
+def _add_thumbnail_to_axes(ax, thumb_img: Image.Image, position="right"):
+    """
+    Embed a thumbnail image into a matplotlib axes.
+    Position: 'right' places it at bottom-right of the plot area.
+    """
+    # Resize to a reasonable size for the graph
+    thumb_img.thumbnail((280, 160), Image.LANCZOS)
+    imagebox = OffsetImage(thumb_img, zoom=1, alpha=0.85)
+    imagebox.image.axes = ax
+
+    # Place at bottom-right with a subtle border
+    ab = AnnotationBbox(
+        imagebox,
+        (1.0, 0.0),
+        xycoords="axes fraction",
+        box_alignment=(1.05, -0.05),
+        frameon=True,
+        bboxprops=dict(boxstyle="round,pad=0.1", facecolor="white", edgecolor="#cccccc", linewidth=1),
+    )
+    ax.add_artist(ab)
+
+
 def generate_stream_graph(stream: dict, report_dir: str) -> str:
     """
     Generate a viewer count graph for a single stream.
@@ -96,6 +137,11 @@ def generate_stream_graph(stream: dict, report_dir: str) -> str:
         stats_text, xy=(0.5, 1.02), xycoords="axes fraction",
         ha="center", fontsize=10, color="#555555"
     )
+
+    # Embed live thumbnail
+    thumb_img = _download_thumbnail(stream.get("thumbnail_url", ""))
+    if thumb_img:
+        _add_thumbnail_to_axes(ax, thumb_img)
 
     ax.grid(True, alpha=0.3)
     ax.set_xlim(times[0], times[-1])

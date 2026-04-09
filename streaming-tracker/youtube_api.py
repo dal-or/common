@@ -97,6 +97,17 @@ def get_video_details(video_ids: list[str]) -> list[dict]:
                 actual_start = live_details.get("actualStartTime")
                 actual_end = live_details.get("actualEndTime")
 
+                # Pick best available thumbnail
+                thumbnails = snippet.get("thumbnails", {})
+                thumbnail_url = (
+                    thumbnails.get("maxres", {}).get("url")
+                    or thumbnails.get("standard", {}).get("url")
+                    or thumbnails.get("high", {}).get("url")
+                    or thumbnails.get("medium", {}).get("url")
+                    or thumbnails.get("default", {}).get("url")
+                    or ""
+                )
+
                 results.append({
                     "video_id": item["id"],
                     "title": snippet.get("title", "Unknown"),
@@ -106,6 +117,7 @@ def get_video_details(video_ids: list[str]) -> list[dict]:
                     "concurrent_viewers": int(concurrent_viewers) if concurrent_viewers else 0,
                     "actual_start_time": actual_start,
                     "actual_end_time": actual_end,
+                    "thumbnail_url": thumbnail_url,
                 })
 
         except HttpError as e:

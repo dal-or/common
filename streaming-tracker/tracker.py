@@ -61,11 +61,13 @@ def discover_live_streams():
                 _active_streams[channel_name] = {}
 
             if video_id not in _active_streams[channel_name]:
-                # Get start time from video details
+                # Get start time and thumbnail from video details
                 details = yt.get_video_details([video_id])
                 started_at = None
+                thumbnail_url = ""
                 if details:
                     started_at = details[0].get("actual_start_time")
+                    thumbnail_url = details[0].get("thumbnail_url", "")
 
                 stream_id = db.upsert_stream(
                     channel_name=channel_name,
@@ -73,6 +75,7 @@ def discover_live_streams():
                     video_id=video_id,
                     title=title,
                     started_at=started_at,
+                    thumbnail_url=thumbnail_url,
                 )
                 _active_streams[channel_name][video_id] = stream_id
                 logger.info(
@@ -131,6 +134,7 @@ def poll_viewer_counts():
                 channel_id=detail["channel_id"],
                 video_id=video_id,
                 title=detail["title"],
+                thumbnail_url=detail.get("thumbnail_url", ""),
             )
             logger.info(f"[{now}] {channel_name}: {viewers:,} viewers")
         else:
