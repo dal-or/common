@@ -7,7 +7,7 @@ Schema:
 """
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from config import DB_PATH
@@ -197,31 +197,35 @@ def get_streams_for_day(day: str) -> list[dict]:
     stream that spans multiple days gets per-day stats.
     """
     conn = get_connection()
-    day_start = f"{day} 00:00:00"
-    day_end = f"{day} 23:59:59"
+    # recorded_at is stored as datetime.utcnow().isoformat() which uses 'T'
+    # as the separator. Use T-separated bounds and a half-open interval
+    # [day 00:00, next_day 00:00) to match correctly via string comparison.
+    day_dt = datetime.strptime(day, "%Y-%m-%d")
+    day_start = day_dt.isoformat()                     # "2026-04-09T00:00:00"
+    day_end = (day_dt + timedelta(days=1)).isoformat() # "2026-04-10T00:00:00"
 
     rows = conn.execute(
         """SELECT s.*,
                   (SELECT MAX(viewers) FROM viewer_snapshots
                    WHERE stream_id = s.id
-                     AND recorded_at BETWEEN ? AND ?) as peak_viewers,
+                     AND recorded_at >= ? AND recorded_at < ?) as peak_viewers,
                   (SELECT CAST(AVG(viewers) AS INTEGER) FROM viewer_snapshots
                    WHERE stream_id = s.id
-                     AND recorded_at BETWEEN ? AND ?) as avg_viewers,
+                     AND recorded_at >= ? AND recorded_at < ?) as avg_viewers,
                   (SELECT COUNT(*) FROM viewer_snapshots
                    WHERE stream_id = s.id
-                     AND recorded_at BETWEEN ? AND ?) as snapshot_count,
+                     AND recorded_at >= ? AND recorded_at < ?) as snapshot_count,
                   (SELECT MIN(recorded_at) FROM viewer_snapshots
                    WHERE stream_id = s.id
-                     AND recorded_at BETWEEN ? AND ?) as day_first_snapshot,
+                     AND recorded_at >= ? AND recorded_at < ?) as day_first_snapshot,
                   (SELECT MAX(recorded_at) FROM viewer_snapshots
                    WHERE stream_id = s.id
-                     AND recorded_at BETWEEN ? AND ?) as day_last_snapshot
+                     AND recorded_at >= ? AND recorded_at < ?) as day_last_snapshot
            FROM streams s
            WHERE EXISTS (
                SELECT 1 FROM viewer_snapshots
                WHERE stream_id = s.id
-                 AND recorded_at BETWEEN ? AND ?
+                 AND recorded_at >= ? AND recorded_at < ?
            )
            ORDER BY peak_viewers DESC""",
         (day_start, day_end) * 6,
@@ -235,13 +239,14 @@ def get_streams_for_day(day: str) -> list[dict]:
 def get_stream_snapshots_for_day(stream_id: int, day: str) -> list[dict]:
     """Get viewer snapshots for a stream that fall within a given day (UTC)."""
     conn = get_connection()
-    day_start = f"{day} 00:00:00"
-    day_end = f"{day} 23:59:59"
+    day_dt = datetime.strptime(day, "%Y-%m-%d")
+    day_start = day_dt.isoformat()
+    day_end = (day_dt + timedelta(days=1)).isoformat()
     rows = conn.execute(
         """SELECT viewers, recorded_at
            FROM viewer_snapshots
            WHERE stream_id = ?
-             AND recorded_at BETWEEN ? AND ?
+             AND recorded_at >= ? AND recorded_at < ?
            ORDER BY recorded_at ASC""",
         (stream_id, day_start, day_end),
     ).fetchall()
