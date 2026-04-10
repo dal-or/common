@@ -6,9 +6,11 @@ Tracks viewer counts for live streaming channels (Luzu TV, Olga, Blender, etc.)
 every minute, stores data in SQLite, and generates hourly reports with graphs.
 
 Usage:
-    python main.py              # Run the tracker (continuous)
-    python main.py --report     # Generate a one-off report from existing data
-    python main.py --status     # Show current status of tracked streams
+    python main.py                        # Run the tracker (continuous)
+    python main.py --report               # Generate an hourly snapshot report
+    python main.py --daily-report         # Full report for today (UTC)
+    python main.py --daily-report 2026-04-09  # Full report for a specific day
+    python main.py --status               # Show current status of tracked streams
 """
 
 import argparse
@@ -139,7 +141,11 @@ def main():
     )
     parser.add_argument(
         "--report", action="store_true",
-        help="Generate a one-off report from existing data"
+        help="Generate an hourly snapshot report"
+    )
+    parser.add_argument(
+        "--daily-report", nargs="?", const="today", default=None, metavar="YYYY-MM-DD",
+        help="Generate a full-day report. Optional date; defaults to today (UTC)."
     )
     parser.add_argument(
         "--status", action="store_true",
@@ -150,6 +156,14 @@ def main():
     if args.report:
         db.init_db()
         reporter.generate_hourly_report()
+    elif args.daily_report is not None:
+        db.init_db()
+        day = None if args.daily_report == "today" else args.daily_report
+        try:
+            reporter.generate_daily_report(day)
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
     elif args.status:
         show_status()
     else:

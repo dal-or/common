@@ -183,3 +183,68 @@ def get_streams_active_in_last_hours(hours: int = 1) -> list[dict]:
     result = [dict(r) for r in rows]
     conn.close()
     return result
+
+
+def get_streams_for_day(day: str) -> list[dict]:
+    """
+    Get all streams that had any activity during the given day (UTC).
+
+    day: ISO date string 'YYYY-MM-DD'.
+
+    A stream is considered "active during the day" if any of its viewer
+    snapshots fall within that 24h window. Stats (peak/avg/snapshots)
+    are computed only from snapshots WITHIN the day, so a long-running
+    stream that spans multiple days gets per-day stats.
+    """
+    conn = get_connection()
+    day_start = f"{day} 00:00:00"
+    day_end = f"{day} 23:59:59"
+
+    rows = conn.execute(
+        """SELECT s.*,
+                  (SELECT MAX(viewers) FROM viewer_snapshots
+                   WHERE stream_id = s.id
+                     AND recorded_at BETWEEN ? AND ?) as peak_viewers,
+                  (SELECT CAST(AVG(viewers) AS INTEGER) FROM viewer_snapshots
+                   WHERE stream_id = s.id
+                     AND recorded_at BETWEEN ? AND ?) as avg_viewers,
+                  (SELECT COUNT(*) FROM viewer_snapshots
+                   WHERE stream_id = s.id
+                     AND recorded_at BETWEEN ? AND ?) as snapshot_count,
+                  (SELECT MIN(recorded_at) FROM viewer_snapshots
+                   WHERE stream_id = s.id
+                     AND recorded_at BETWEEN ? AND ?) as day_first_snapshot,
+                  (SELECT MAX(recorded_at) FROM viewer_snapshots
+                   WHERE stream_id = s.id
+                     AND recorded_at BETWEEN ? AND ?) as day_last_snapshot
+           FROM streams s
+           WHERE EXISTS (
+               SELECT 1 FROM viewer_snapshots
+               WHERE stream_id = s.id
+                 AND recorded_at BETWEEN ? AND ?
+           )
+           ORDER BY peak_viewers DESC""",
+        (day_start, day_end) * 6,
+    ).fetchall()
+
+    result = [dict(r) for r in rows]
+    conn.close()
+    return result
+
+
+def get_stream_snapshots_for_day(stream_id: int, day: str) -> list[dict]:
+    """Get viewer snapshots for a stream that fall within a given day (UTC)."""
+    conn = get_connection()
+    day_start = f"{day} 00:00:00"
+    day_end = f"{day} 23:59:59"
+    rows = conn.execute(
+        """SELECT viewers, recorded_at
+           FROM viewer_snapshots
+           WHERE stream_id = ?
+             AND recorded_at BETWEEN ? AND ?
+           ORDER BY recorded_at ASC""",
+        (stream_id, day_start, day_end),
+    ).fetchall()
+    result = [dict(r) for r in rows]
+    conn.close()
+    return result
