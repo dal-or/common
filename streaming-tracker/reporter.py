@@ -14,12 +14,15 @@ from datetime import datetime, date, timedelta
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
+import numpy as np
 import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
+from matplotlib.colors import LinearSegmentedColormap, to_rgba
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+from matplotlib.patches import Polygon, FancyBboxPatch, Rectangle
 from PIL import Image
 
 import database as db
@@ -27,18 +30,47 @@ from config import REPORTS_DIR
 
 logger = logging.getLogger(__name__)
 
-# Colors for different channels (consistent across reports)
-CHANNEL_COLORS = {
-    "Luzu TV": "#FF6B35",
-    "Olga": "#004E89",
-    "Blender": "#7B2D8E",
-    "Gelatina": "#1DB954",
-    "Bondi Live": "#E63946",
-    "Carajo": "#F4A261",
-    "La Casa Streaming": "#2A9D8F",
-    "Vorterix": "#264653",
+# --- Dark "Performance Report" theme ---
+THEME = {
+    "bg":        "#0d0a1f",  # Figure background (deep navy/indigo)
+    "panel_bg":  "#15112b",  # Right-side metrics panel
+    "panel_edge":"#2a2449",  # Subtle panel border
+    "text":      "#ffffff",
+    "text_dim":  "#8a85a8",
+    "grid":      "#252040",
+    "accent":    "#d946ef",  # Magenta fallback
 }
-DEFAULT_COLOR = "#666666"
+
+# Channel colors — vivid palette that reads well on dark backgrounds
+CHANNEL_COLORS = {
+    "Luzu TV":          "#ff7a45",
+    "Olga":             "#4da6ff",
+    "Blender":          "#d946ef",
+    "Gelatina":         "#22e07a",
+    "Bondi Live":       "#ff5a6e",
+    "Carajo":           "#ffb648",
+    "La Casa Streaming":"#2bd4c4",
+    "Vorterix":         "#7b9cff",
+}
+DEFAULT_COLOR = THEME["accent"]
+
+_SPANISH_MONTHS = [
+    "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+    "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE",
+]
+
+
+def _format_spanish_date(dt: datetime) -> str:
+    return f"{dt.day} DE {_SPANISH_MONTHS[dt.month - 1]} DE {dt.year}"
+
+
+def _format_k(value: float) -> str:
+    """Format numbers as '12k', '1.5k', '850', etc."""
+    if value >= 10000:
+        return f"{int(round(value / 1000))}k"
+    if value >= 1000:
+        return f"{value / 1000:.1f}k".replace(".0k", "k")
+    return f"{int(value)}"
 
 
 def _ensure_reports_dir(subdir: str = "") -> str:
@@ -99,13 +131,167 @@ def _add_thumbnail_to_axes(ax, thumb_img: Image.Image, position="right"):
     ax.add_artist(ab)
 
 
+def _apply_gradient_fill(ax, times, viewers, color, y_max):
+    """Vertical gradient fill under the curve (transparent at bottom -> color at top)."""
+    times_num = mdates.date2num(times)
+
+    gradient = np.linspace(0, 1, 256).reshape(-1, 1)
+    cmap = LinearSegmentedColormap.from_list(
+        "fade",
+        [to_rgba(color, 0.0), to_rgba(color, 0.55)],
+    )
+
+    extent = [times_num[0], times_num[-1], 0, y_max]
+    im = ax.imshow(
+        gradient, aspect="auto", cmap=cmap, origin="lower",
+        extent=extent, zorder=2,
+    )
+
+    # Clip to the area under the curve
+    polygon_points = list(zip(times_num, viewers)) + [
+        (times_num[-1], 0),
+        (times_num[0], 0),
+    ]
+    polygon = Polygon(polygon_points, closed=True, facecolor="none", edgecolor="none")
+    ax.add_patch(polygon)
+    im.set_clip_path(polygon)
+
+
+def _style_dark_axes(ax):
+    """Apply the dark theme to an axes (ticks, spines, grid, background)."""
+    ax.set_facecolor(THEME["bg"])
+    ax.tick_params(colors=THEME["text_dim"], labelsize=9)
+    ax.grid(True, alpha=0.25, color=THEME["grid"], linestyle="-", linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(THEME["grid"])
+        ax.spines[side].set_linewidth(1)
+
+
+def _draw_title_block(fig, channel_name: str, title: str, report_dt: datetime, color: str):
+    """
+    Title area: '<CANAL>: LIVESTREAM PERFORMANCE REPORT'
+                 'PROGRAMA: "<title>"'
+                 'INFORME DEL <fecha>'
+    The channel name is drawn in color + italic, followed by the rest in white.
+    """
+    channel_upper = channel_name.upper()
+
+    # First text: channel name (colored, italic)
+    t1 = fig.text(
+        0.055, 0.93, channel_upper,
+        fontsize=22, fontweight="bold", color=color,
+        fontstyle="italic", ha="left", va="top",
+    )
+
+    # Measure it so we can place the rest right after
+    fig.canvas.draw()
+    bbox = t1.get_window_extent(renderer=fig.canvas.get_renderer())
+    bbox_fig = bbox.transformed(fig.transFigure.inverted())
+
+    fig.text(
+        bbox_fig.x1 + 0.003, 0.93, ": LIVESTREAM PERFORMANCE REPORT",
+        fontsize=22, fontweight="bold", color=THEME["text"],
+        ha="left", va="top",
+    )
+
+    # Program subtitle
+    program_line = f'PROGRAMA: "{title}"'
+    if len(program_line) > 85:
+        program_line = program_line[:82] + '…"'
+    fig.text(
+        0.055, 0.86, program_line,
+        fontsize=13, fontweight="bold", color=THEME["text"],
+        ha="left", va="top",
+    )
+
+    # Date line
+    fig.text(
+        0.055, 0.815, f"INFORME DEL {_format_spanish_date(report_dt)}",
+        fontsize=9, color=THEME["text_dim"],
+        ha="left", va="top",
+    )
+
+
+def _draw_metrics_panel(fig, current: int, peak: int, avg: int, color: str,
+                        thumb_img: Image.Image | None):
+    """
+    Right-side panel with: MÉTRICAS CLAVE / ACTUAL / PICO / PROMEDIO / thumbnail.
+    """
+    panel_left = 0.775
+    panel_right = 0.975
+    panel_top = 0.945
+    panel_bottom = 0.055
+
+    # Background box
+    bg = FancyBboxPatch(
+        (panel_left, panel_bottom),
+        panel_right - panel_left,
+        panel_top - panel_bottom,
+        boxstyle="round,pad=0.005,rounding_size=0.012",
+        facecolor=THEME["panel_bg"],
+        edgecolor=THEME["panel_edge"],
+        linewidth=1,
+        transform=fig.transFigure,
+        zorder=0,
+    )
+    fig.patches.append(bg)
+
+    label_x = panel_left + 0.018
+
+    # Header
+    fig.text(
+        label_x, panel_top - 0.025, "MÉTRICAS CLAVE",
+        fontsize=11, fontweight="bold", color=THEME["text_dim"],
+        ha="left", va="top",
+    )
+
+    # Horizontal divider under header
+    fig.add_artist(Rectangle(
+        (label_x, panel_top - 0.055),
+        panel_right - label_x - 0.018, 0.0015,
+        facecolor=THEME["panel_edge"], edgecolor="none",
+        transform=fig.transFigure, zorder=1,
+    ))
+
+    # Metric cards: (label, value, value_color, y_label, y_value)
+    metrics = [
+        ("ACTUAL",   f"{current:,}", color,         panel_top - 0.09, panel_top - 0.14),
+        ("PICO",     f"{peak:,}",    color,         panel_top - 0.24, panel_top - 0.29),
+        ("PROMEDIO", f"{avg:,}",     THEME["text"], panel_top - 0.39, panel_top - 0.44),
+    ]
+    for label, value, val_color, y_label, y_value in metrics:
+        fig.text(
+            label_x, y_label, label,
+            fontsize=10, fontweight="bold", color=THEME["text_dim"],
+            ha="left", va="top",
+        )
+        fig.text(
+            label_x, y_value, value,
+            fontsize=26, fontweight="bold", color=val_color,
+            ha="left", va="top",
+        )
+
+    # Thumbnail at bottom of panel
+    if thumb_img is not None:
+        thumb_width = panel_right - panel_left - 0.03
+        thumb_height = 0.22
+        thumb_x = panel_left + 0.015
+        thumb_y = panel_bottom + 0.025
+
+        thumb_ax = fig.add_axes([thumb_x, thumb_y, thumb_width, thumb_height])
+        thumb_ax.imshow(thumb_img)
+        thumb_ax.axis("off")
+        for spine in thumb_ax.spines.values():
+            spine.set_visible(False)
+
+
 def generate_stream_graph(stream: dict, report_dir: str, snapshots: list[dict] | None = None) -> str:
     """
-    Generate a viewer count graph for a single stream.
-    Returns the path to the saved PNG.
-
-    If snapshots is provided, use those (useful for filtering to a specific day).
-    Otherwise, loads all snapshots for the stream.
+    Generate a "performance report" style graph for a single stream:
+    dark theme, left-side gradient curve, right-side metrics panel + thumbnail.
     """
     if snapshots is None:
         snapshots = db.get_stream_snapshots(stream["id"])
@@ -115,46 +301,57 @@ def generate_stream_graph(stream: dict, report_dir: str, snapshots: list[dict] |
     times = [_parse_iso(s["recorded_at"]) for s in snapshots]
     viewers = [s["viewers"] for s in snapshots]
 
-    color = CHANNEL_COLORS.get(stream["channel_name"], DEFAULT_COLOR)
+    channel_name = stream["channel_name"]
+    title = stream["title"]
+    color = CHANNEL_COLORS.get(channel_name, DEFAULT_COLOR)
 
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(times, viewers, color=color, linewidth=2)
-    ax.fill_between(times, viewers, alpha=0.15, color=color)
-
-    # Formatting
-    ax.set_title(
-        f'{stream["channel_name"]} - "{stream["title"]}"',
-        fontsize=14, fontweight="bold", pad=15
-    )
-    ax.set_xlabel("Hora (UTC)", fontsize=11)
-    ax.set_ylabel("Viewers", fontsize=11)
-    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-
-    # Stats annotation
+    current = viewers[-1]
     peak = max(viewers)
     avg = sum(viewers) // len(viewers)
-    current = viewers[-1]
-    stats_text = f"Actual: {current:,}  |  Pico: {peak:,}  |  Promedio: {avg:,}"
-    ax.annotate(
-        stats_text, xy=(0.5, 1.02), xycoords="axes fraction",
-        ha="center", fontsize=10, color="#555555"
+    y_max = max(peak * 1.15, 10)
+
+    # Figure with dark background
+    fig = plt.figure(figsize=(15, 6.5), facecolor=THEME["bg"])
+
+    # --- Title block ---
+    _draw_title_block(fig, channel_name, title, times[-1], color)
+
+    # --- Graph axes (left side) ---
+    # [left, bottom, width, height] in figure coords
+    graph_ax = fig.add_axes([0.055, 0.11, 0.70, 0.62])
+    _style_dark_axes(graph_ax)
+
+    graph_ax.plot(times, viewers, color=color, linewidth=2.5, zorder=5)
+    _apply_gradient_fill(graph_ax, times, viewers, color, y_max)
+
+    # Endpoint dot (highlights current value)
+    graph_ax.scatter(
+        [times[-1]], [viewers[-1]],
+        color=color, s=70, zorder=10,
+        edgecolor="white", linewidth=1.2,
     )
 
-    # Embed live thumbnail
+    graph_ax.set_ylabel(
+        "VISUALIZADORES", fontsize=10, color=THEME["text_dim"],
+        fontweight="bold", labelpad=10,
+    )
+    graph_ax.set_xlabel(
+        "HORA (UTC)", fontsize=10, color=THEME["text_dim"],
+        fontweight="bold", labelpad=10,
+    )
+    graph_ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: _format_k(x)))
+    graph_ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    graph_ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=10))
+    graph_ax.set_xlim(times[0], times[-1])
+    graph_ax.set_ylim(0, y_max)
+
+    # --- Metrics panel (right side) ---
     thumb_img = _download_thumbnail(stream.get("thumbnail_url", ""))
-    if thumb_img:
-        _add_thumbnail_to_axes(ax, thumb_img)
+    _draw_metrics_panel(fig, current, peak, avg, color, thumb_img)
 
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(times[0], times[-1])
-    ax.set_ylim(bottom=0)
-    fig.tight_layout()
-
-    filename = f"{stream['channel_name'].replace(' ', '_')}_{stream['video_id']}.png"
+    filename = f"{channel_name.replace(' ', '_')}_{stream['video_id']}.png"
     filepath = os.path.join(report_dir, filename)
-    fig.savefig(filepath, dpi=150, bbox_inches="tight")
+    fig.savefig(filepath, dpi=150, facecolor=THEME["bg"], bbox_inches=None)
     plt.close(fig)
 
     logger.info(f"Graph saved: {filepath}")
@@ -163,43 +360,59 @@ def generate_stream_graph(stream: dict, report_dir: str, snapshots: list[dict] |
 
 def generate_combined_graph(streams: list[dict], report_dir: str) -> str:
     """
-    Generate a single graph comparing all currently live streams.
-    Returns path to the saved PNG.
+    Dark-theme comparative graph of all currently live streams.
     """
     if not streams:
         return ""
 
-    fig, ax = plt.subplots(figsize=(14, 6))
+    fig = plt.figure(figsize=(15, 6.5), facecolor=THEME["bg"])
+    ax = fig.add_axes([0.06, 0.12, 0.91, 0.76])
+    _style_dark_axes(ax)
 
+    any_data = False
     for stream in streams:
         snapshots = db.get_stream_snapshots(stream["id"])
         if len(snapshots) < 2:
             continue
+        any_data = True
 
         times = [_parse_iso(s["recorded_at"]) for s in snapshots]
         viewers = [s["viewers"] for s in snapshots]
         color = CHANNEL_COLORS.get(stream["channel_name"], DEFAULT_COLOR)
 
-        label = f'{stream["channel_name"]} ({viewers[-1]:,} viewers)'
-        ax.plot(times, viewers, color=color, linewidth=2, label=label)
+        label = f'{stream["channel_name"]} ({viewers[-1]:,})'
+        ax.plot(times, viewers, color=color, linewidth=2.2, label=label, zorder=5)
+        ax.fill_between(times, viewers, alpha=0.08, color=color, zorder=1)
 
-    ax.set_title(
-        "Streaming en vivo - Comparativa de audiencia",
-        fontsize=14, fontweight="bold", pad=15
+    if not any_data:
+        plt.close(fig)
+        return ""
+
+    fig.text(
+        0.06, 0.945, "COMPARATIVA DE AUDIENCIA — STREAMING EN VIVO",
+        fontsize=16, fontweight="bold", color=THEME["text"], va="top",
     )
-    ax.set_xlabel("Hora (UTC)", fontsize=11)
-    ax.set_ylabel("Viewers", fontsize=11)
-    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
+
+    ax.set_xlabel("HORA (UTC)", fontsize=10, color=THEME["text_dim"],
+                  fontweight="bold", labelpad=8)
+    ax.set_ylabel("VISUALIZADORES", fontsize=10, color=THEME["text_dim"],
+                  fontweight="bold", labelpad=8)
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: _format_k(x)))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-    ax.legend(loc="upper left", fontsize=9)
-    ax.grid(True, alpha=0.3)
     ax.set_ylim(bottom=0)
-    fig.tight_layout()
+
+    legend = ax.legend(
+        loc="upper left", fontsize=9, frameon=True,
+        facecolor=THEME["panel_bg"], edgecolor=THEME["panel_edge"],
+        labelcolor=THEME["text"],
+    )
+    for text in legend.get_texts():
+        text.set_color(THEME["text"])
 
     filename = "comparativa_audiencia.png"
     filepath = os.path.join(report_dir, filename)
-    fig.savefig(filepath, dpi=150, bbox_inches="tight")
+    fig.savefig(filepath, dpi=150, facecolor=THEME["bg"])
     plt.close(fig)
 
     logger.info(f"Combined graph saved: {filepath}")
@@ -298,7 +511,9 @@ def generate_daily_timeline_graph(
     if not streams:
         return ""
 
-    fig, ax = plt.subplots(figsize=(16, 7))
+    fig = plt.figure(figsize=(16, 7.5), facecolor=THEME["bg"])
+    ax = fig.add_axes([0.055, 0.25, 0.92, 0.60])
+    _style_dark_axes(ax)
 
     day_start = datetime.strptime(day, "%Y-%m-%d")
     day_end = day_start + timedelta(days=1)
@@ -316,43 +531,49 @@ def generate_daily_timeline_graph(
 
         peak = max(viewers)
         label = f'{stream["channel_name"]} — {stream["title"][:40]} (pico {peak:,})'
-        ax.plot(times, viewers, color=color, linewidth=1.8, label=label)
-        ax.fill_between(times, viewers, alpha=0.08, color=color)
+        ax.plot(times, viewers, color=color, linewidth=1.8, label=label, zorder=5)
+        ax.fill_between(times, viewers, alpha=0.06, color=color, zorder=1)
 
     if not any_data:
         plt.close(fig)
         return ""
 
-    ax.set_title(
-        f"Timeline de audiencia — {day} (UTC)",
-        fontsize=15, fontweight="bold", pad=15
+    fig.text(
+        0.055, 0.945, f"TIMELINE DE AUDIENCIA — {day} (UTC)",
+        fontsize=18, fontweight="bold", color=THEME["text"], va="top",
     )
-    ax.set_xlabel("Hora del día (UTC)", fontsize=11)
-    ax.set_ylabel("Viewers", fontsize=11)
-    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
+    fig.text(
+        0.055, 0.905, "Curvas de viewers de todos los programas del día",
+        fontsize=10, color=THEME["text_dim"], va="top",
+    )
+
+    ax.set_xlabel("HORA DEL DÍA (UTC)", fontsize=10, color=THEME["text_dim"],
+                  fontweight="bold", labelpad=8)
+    ax.set_ylabel("VISUALIZADORES", fontsize=10, color=THEME["text_dim"],
+                  fontweight="bold", labelpad=8)
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: _format_k(x)))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
     ax.set_xlim(day_start, day_end)
     ax.set_ylim(bottom=0)
-    ax.grid(True, alpha=0.3)
-    ax.legend(
+
+    legend = ax.legend(
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.12),
-        ncol=2,
-        fontsize=8,
-        frameon=False,
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=2, fontsize=8, frameon=False,
     )
-    fig.tight_layout()
+    for text in legend.get_texts():
+        text.set_color(THEME["text"])
 
     filepath = os.path.join(report_dir, "timeline_dia.png")
-    fig.savefig(filepath, dpi=150, bbox_inches="tight")
+    fig.savefig(filepath, dpi=150, facecolor=THEME["bg"])
     plt.close(fig)
     logger.info(f"Daily timeline graph saved: {filepath}")
     return filepath
 
 
 def generate_daily_ranking_graph(streams: list[dict], day: str, report_dir: str) -> str:
-    """Horizontal bar chart ranking all streams by peak viewers."""
+    """Dark-theme horizontal bar chart ranking all streams by peak viewers."""
     if not streams:
         return ""
 
@@ -364,42 +585,49 @@ def generate_daily_ranking_graph(streams: list[dict], day: str, report_dir: str)
     if not ranked:
         return ""
 
-    labels = [
-        f'{s["channel_name"]} — {s["title"][:45]}'
-        for s in ranked
-    ]
+    labels = [f'{s["channel_name"]} — {s["title"][:45]}' for s in ranked]
     peaks = [s["peak_viewers"] for s in ranked]
     colors = [CHANNEL_COLORS.get(s["channel_name"], DEFAULT_COLOR) for s in ranked]
 
-    height = max(4, 0.45 * len(ranked) + 2)
-    fig, ax = plt.subplots(figsize=(14, height))
-    bars = ax.barh(range(len(ranked)), peaks, color=colors)
+    height = max(4.5, 0.50 * len(ranked) + 2.5)
+    fig = plt.figure(figsize=(14, height), facecolor=THEME["bg"])
+    ax = fig.add_axes([0.30, 0.10, 0.65, 0.80])
+    _style_dark_axes(ax)
+    ax.spines["left"].set_visible(False)
+    ax.tick_params(axis="y", length=0)
+
+    bars = ax.barh(range(len(ranked)), peaks, color=colors, edgecolor="none", zorder=5)
     ax.set_yticks(range(len(ranked)))
-    ax.set_yticklabels(labels, fontsize=9)
+    ax.set_yticklabels(labels, fontsize=9, color=THEME["text"])
     ax.invert_yaxis()
-    ax.set_xlabel("Pico de viewers", fontsize=11)
-    ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
-    ax.set_title(
-        f"Ranking de programas por pico de audiencia — {day} (UTC)",
-        fontsize=14, fontweight="bold", pad=15,
+    ax.set_xlabel("PICO DE VIEWERS", fontsize=10, color=THEME["text_dim"],
+                  fontweight="bold", labelpad=10)
+    ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: _format_k(x)))
+
+    fig.text(
+        0.05, 0.96, f"RANKING DEL DÍA — {day} (UTC)",
+        fontsize=18, fontweight="bold", color=THEME["text"], va="top",
+    )
+    fig.text(
+        0.05, 0.925, "Programas ordenados por pico de audiencia",
+        fontsize=10, color=THEME["text_dim"], va="top",
     )
 
-    # Value labels on bars
+    # Value labels
+    max_peak = max(peaks)
     for bar, peak in zip(bars, peaks):
         ax.text(
-            bar.get_width(),
+            bar.get_width() + max_peak * 0.005,
             bar.get_y() + bar.get_height() / 2,
-            f" {peak:,}",
-            va="center",
-            ha="left",
-            fontsize=9,
+            f"{peak:,}",
+            va="center", ha="left", fontsize=9,
+            color=THEME["text"], fontweight="bold",
         )
 
-    ax.grid(True, axis="x", alpha=0.3)
-    fig.tight_layout()
+    ax.set_xlim(0, max_peak * 1.12)
 
     filepath = os.path.join(report_dir, "ranking_dia.png")
-    fig.savefig(filepath, dpi=150, bbox_inches="tight")
+    fig.savefig(filepath, dpi=150, facecolor=THEME["bg"])
     plt.close(fig)
     logger.info(f"Daily ranking graph saved: {filepath}")
     return filepath
